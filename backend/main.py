@@ -10,6 +10,9 @@ from pydantic import BaseModel
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+from forge_engine import RedTeamGenerator, SimulationOrchestrator
+from analytics_processor import GovernanceAnalytics
+
 load_dotenv()
 
 # Setup logging
@@ -20,6 +23,9 @@ logger = logging.getLogger("AetherBackend")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+
+# Initialize Forge Components
+forge_engine = RedTeamGenerator(GEMINI_API_KEY)
 
 app = FastAPI(title="Aether Backend")
 
@@ -42,6 +48,10 @@ class SecuritySentry:
         violations = []
         if "sk-" in text or "AIza" in text: # Basic patterns for OpenAI/Google keys
             violations.append({"type": "SECRET_LEAK", "severity": "CRITICAL", "message": "Potential API Key detected in prompt."})
+        
+        # Add a mock "injection" detection for the demo
+        if "ignore all previous instructions" in text.lower() or "system override" in text.lower():
+            violations.append({"type": "PROMPT_INJECTION", "severity": "HIGH", "message": "Malicious override sequence detected."})
         
         return {"passed": len(violations) == 0, "violations": violations}
 
@@ -79,6 +89,89 @@ class ConnectionManager:
                 pass
 
 manager = ConnectionManager()
+
+# --- Forge Orchestrator Callback ---
+
+async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[str] = None, branch_name: str = "Main", metadata: Dict[str, Any] = {}):
+    """Encapsulated execution logic used by both API and Forge."""
+    snapshot_id = str(uuid.uuid4())
+    start_time = time.time()
+    
+    # 1. Audit Input
+    input_audit = await SecuritySentry.audit_input(prompt)
+    
+    await manager.broadcast(json.dumps({
+        "type": "TRACE_STEP",
+        "session_id": session_id,
+        "snapshot_id": snapshot_id,
+        "step": "INPUT_AUDIT",
+        "status": "COMPLETED" if input_audit["passed"] else "VIOLATION",
+        "data": input_audit
+    }))
+    
+    if not input_audit["passed"]:
+        return {"status": "BLOCKED", "reason": input_audit["violations"], "snapshot_id": snapshot_id}
+
+    # 2. Call Gemini
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        await manager.broadcast(json.dumps({
+            "type": "TRACE_STEP",
+            "session_id": session_id,
+            "snapshot_id": snapshot_id,
+            "step": "LLM_GENERATE",
+            "status": "IN_PROGRESS"
+        }))
+        
+        response = model.generate_content(prompt)
+        raw_output = response.text
+        
+        # 3. Audit Output
+        output_audit = await SecuritySentry.audit_output(raw_output)
+        final_output = output_audit.get("redacted_text", raw_output)
+        
+        await manager.broadcast(json.dumps({
+            "type": "TRACE_STEP",
+            "session_id": session_id,
+            "snapshot_id": snapshot_id,
+            "step": "OUTPUT_AUDIT",
+            "status": "COMPLETED" if output_audit["passed"] else "REDACTED",
+            "data": output_audit
+        }))
+        
+        # 4. Save Snapshot
+        import time
+        snapshot = Snapshot(
+            id=snapshot_id,
+            parent_id=parent_id,
+            session_id=session_id,
+            branch_name=branch_name,
+            prompt=prompt,
+            response=final_output,
+            input_audit=input_audit,
+            output_audit=output_audit,
+            metadata={
+                "latency": time.time() - start_time,
+                "model": "gemini-1.5-flash",
+                **metadata
+            },
+            timestamp=time.time()
+        )
+        flux_store.add_snapshot(snapshot)
+        
+        return {
+            "status": "SUCCESS",
+            "session_id": session_id,
+            "snapshot_id": snapshot_id,
+            "output": final_output,
+            "violations": output_audit["violations"]
+        }
+    except Exception as e:
+        logger.error(f"Error in execution: {e}")
+        return {"status": "ERROR", "error": str(e)}
+
+forge_orchestrator = SimulationOrchestrator(forge_engine, execute_agent_logic)
 
 # --- Flux Engine: Temporal State Store ---
 
@@ -125,6 +218,10 @@ class AgentRequest(BaseModel):
     branch_name: Optional[str] = "Main"
     policy_overrides: Optional[Dict[str, Any]] = None
 
+class ForgeRequest(BaseModel):
+    session_id: str
+    categories: List[str]
+
 # --- Endpoints ---
 
 @app.get("/")
@@ -132,7 +229,7 @@ async def root():
     return {
         "status": "online",
         "engine": "Aether Flux Engine v1.0",
-        "features": ["branching", "snapshotting", "time-travel"]
+        "features": ["branching", "snapshotting", "time-travel", "forge"]
     }
 
 @app.websocket("/ws/trace")
@@ -150,80 +247,41 @@ async def execute_agent(request: AgentRequest):
         raise HTTPException(status_code=500, detail="Gemini API Key not configured")
     
     session_id = request.session_id or str(uuid.uuid4())
-    snapshot_id = str(uuid.uuid4())
-    import time
-    start_time = time.time()
+    result = await execute_agent_logic(
+        prompt=request.prompt,
+        session_id=session_id,
+        parent_id=request.parent_id,
+        branch_name=request.branch_name or "Main"
+    )
     
-    # 1. Audit Input (The Sentry)
-    # Support policy overrides for specific branches/tests
-    input_audit = await SecuritySentry.audit_input(request.prompt)
+    if result["status"] == "ERROR":
+        raise HTTPException(status_code=500, detail=result["error"])
     
-    await manager.broadcast(json.dumps({
-        "type": "TRACE_STEP",
-        "session_id": session_id,
-        "snapshot_id": snapshot_id,
-        "step": "INPUT_AUDIT",
-        "status": "COMPLETED" if input_audit["passed"] else "VIOLATION",
-        "data": input_audit
-    }))
-    
-    if not input_audit["passed"]:
-        return {"status": "BLOCKED", "reason": input_audit["violations"]}
+    return result
 
-    # 2. Call Gemini
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        await manager.broadcast(json.dumps({
-            "type": "TRACE_STEP",
-            "session_id": session_id,
-            "snapshot_id": snapshot_id,
-            "step": "LLM_GENERATE",
-            "status": "IN_PROGRESS"
-        }))
-        
-        # Context enrichment: In a real app, we'd pull the parent's conversation history
-        # For this demo, we'll just simulate the call
-        response = model.generate_content(request.prompt)
-        raw_output = response.text
-        
-        # 3. Audit Output (The Sentry)
-        output_audit = await SecuritySentry.audit_output(raw_output)
-        final_output = output_audit.get("redacted_text", raw_output)
-        
-        await manager.broadcast(json.dumps({
-            "type": "TRACE_STEP",
-            "session_id": session_id,
-            "snapshot_id": snapshot_id,
-            "step": "OUTPUT_AUDIT",
-            "status": "COMPLETED" if output_audit["passed"] else "REDACTED",
-            "data": output_audit
-        }))
-        
-        # 4. Save Snapshot to Flux Engine
-        snapshot = Snapshot(
-            id=snapshot_id,
-            parent_id=request.parent_id,
-            session_id=session_id,
-            branch_name=request.branch_name or "Main",
-            prompt=request.prompt,
-            response=final_output,
-            input_audit=input_audit,
-            output_audit=output_audit,
-            metadata={
-                "latency": time.time() - start_time,
-                "model": "gemini-1.5-flash"
-            },
-            timestamp=time.time()
-        )
-        flux_store.add_snapshot(snapshot)
-        
-        return {
-            "session_id": session_id,
-            "snapshot_id": snapshot_id,
-            "output": final_output,
-            "violations": output_audit["violations"]
-        }
+@app.post("/api/forge/simulate")
+async def simulate_forge(request: ForgeRequest):
+    """Triggers a background simulation suite."""
+    if forge_orchestrator.is_running:
+        return {"status": "BUSY", "message": "Simulation already in progress"}
+    
+    # We run it in the background so as not to block the API
+    asyncio.create_task(forge_orchestrator.run_simulation_suite(request.session_id, request.categories))
+    
+    return {"status": "STARTED", "message": "Forge simulation suite launched"}
+
+@app.get("/api/forge/analytics/{session_id}")
+async def get_forge_analytics(session_id: str):
+    """Retrieves security insights for a session."""
+    snapshots = flux_store.get_tree(session_id)
+    risk_data = GovernanceAnalytics.calculate_risk_score(snapshots)
+    heatmap = GovernanceAnalytics.generate_heatmap_data(snapshots)
+    
+    return {
+        "risk_report": risk_data,
+        "heatmap": heatmap
+    }
+
         
     except Exception as e:
         logger.error(f"Error in Flux Engine: {e}")
