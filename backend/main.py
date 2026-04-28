@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from forge_engine import RedTeamGenerator, SimulationOrchestrator
 from analytics_processor import GovernanceAnalytics
+from swarm_manager import SwarmManager
 
 load_dotenv()
 
@@ -24,8 +25,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# Initialize Forge Components
+# Initialize Components
 forge_engine = RedTeamGenerator(GEMINI_API_KEY)
+# SwarmManager initialized later with callback
 
 app = FastAPI(title="Aether Backend")
 
@@ -81,7 +83,9 @@ class ConnectionManager:
     def disconnect(self, websocket: WebSocket):
         self.active_connections.remove(websocket)
 
-    async def broadcast(self, message: str):
+    async def broadcast(self, message: Any):
+        if isinstance(message, dict):
+            message = json.dumps(message)
         for connection in self.active_connections:
             try:
                 await connection.send_text(message)
@@ -90,24 +94,24 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- Forge Orchestrator Callback ---
+# --- Core Execution Logic ---
 
 async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[str] = None, branch_name: str = "Main", metadata: Dict[str, Any] = {}):
-    """Encapsulated execution logic used by both API and Forge."""
+    """Encapsulated execution logic used by API, Forge, and Nexus."""
     snapshot_id = str(uuid.uuid4())
     start_time = time.time()
     
     # 1. Audit Input
     input_audit = await SecuritySentry.audit_input(prompt)
     
-    await manager.broadcast(json.dumps({
+    await manager.broadcast({
         "type": "TRACE_STEP",
         "session_id": session_id,
         "snapshot_id": snapshot_id,
         "step": "INPUT_AUDIT",
         "status": "COMPLETED" if input_audit["passed"] else "VIOLATION",
         "data": input_audit
-    }))
+    })
     
     if not input_audit["passed"]:
         return {"status": "BLOCKED", "reason": input_audit["violations"], "snapshot_id": snapshot_id}
@@ -116,13 +120,13 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
     try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         
-        await manager.broadcast(json.dumps({
+        await manager.broadcast({
             "type": "TRACE_STEP",
             "session_id": session_id,
             "snapshot_id": snapshot_id,
             "step": "LLM_GENERATE",
             "status": "IN_PROGRESS"
-        }))
+        })
         
         response = model.generate_content(prompt)
         raw_output = response.text
@@ -131,17 +135,16 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
         output_audit = await SecuritySentry.audit_output(raw_output)
         final_output = output_audit.get("redacted_text", raw_output)
         
-        await manager.broadcast(json.dumps({
+        await manager.broadcast({
             "type": "TRACE_STEP",
             "session_id": session_id,
             "snapshot_id": snapshot_id,
             "step": "OUTPUT_AUDIT",
             "status": "COMPLETED" if output_audit["passed"] else "REDACTED",
             "data": output_audit
-        }))
+        })
         
         # 4. Save Snapshot
-        import time
         snapshot = Snapshot(
             id=snapshot_id,
             parent_id=parent_id,
@@ -171,7 +174,9 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
         logger.error(f"Error in execution: {e}")
         return {"status": "ERROR", "error": str(e)}
 
+# --- Initialize Managers ---
 forge_orchestrator = SimulationOrchestrator(forge_engine, execute_agent_logic)
+swarm_manager = SwarmManager(GEMINI_API_KEY, execute_agent_logic)
 
 # --- Flux Engine: Temporal State Store ---
 
@@ -222,6 +227,10 @@ class ForgeRequest(BaseModel):
     session_id: str
     categories: List[str]
 
+class NexusRequest(BaseModel):
+    session_id: str
+    prompt: str
+
 # --- Endpoints ---
 
 @app.get("/")
@@ -229,7 +238,7 @@ async def root():
     return {
         "status": "online",
         "engine": "Aether Flux Engine v1.0",
-        "features": ["branching", "snapshotting", "time-travel", "forge"]
+        "features": ["branching", "snapshotting", "time-travel", "forge", "nexus"]
     }
 
 @app.websocket("/ws/trace")
@@ -265,10 +274,24 @@ async def simulate_forge(request: ForgeRequest):
     if forge_orchestrator.is_running:
         return {"status": "BUSY", "message": "Simulation already in progress"}
     
-    # We run it in the background so as not to block the API
     asyncio.create_task(forge_orchestrator.run_simulation_suite(request.session_id, request.categories))
-    
     return {"status": "STARTED", "message": "Forge simulation suite launched"}
+
+@app.post("/api/nexus/launch")
+async def launch_nexus(request: NexusRequest):
+    """Triggers a multi-agent swarm workflow."""
+    # Run swarm in background
+    asyncio.create_task(swarm_manager.launch_swarm(
+        request.session_id, 
+        request.prompt, 
+        manager.broadcast
+    ))
+    return {"status": "STARTED", "message": "Nexus swarm launched"}
+
+@app.post("/api/nexus/stop/{swarm_id}")
+async def stop_nexus(swarm_id: str):
+    swarm_manager.stop_swarm(swarm_id)
+    return {"status": "STOPPED", "message": "Nexus swarm termination signaled"}
 
 @app.get("/api/forge/analytics/{session_id}")
 async def get_forge_analytics(session_id: str):

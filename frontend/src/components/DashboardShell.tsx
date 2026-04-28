@@ -1,6 +1,3 @@
-"use client";
-
-import React, { useState } from "react";
 import { 
   Shield, 
   Activity, 
@@ -11,7 +8,8 @@ import {
   Menu,
   ChevronRight,
   Database,
-  Flame
+  Flame,
+  Network
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -44,6 +42,14 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             label="Observability" 
             active={pathname === "/"} 
             sidebarOpen={sidebarOpen} 
+          />
+          <NavItem 
+            href="/nexus" 
+            icon={<Network size={20} />} 
+            label="The Nexus" 
+            active={pathname === "/nexus"} 
+            sidebarOpen={sidebarOpen} 
+            variant="nexus"
           />
           <NavItem 
             href="/forge" 
@@ -127,16 +133,18 @@ function NavItem({
     label: string, 
     active?: boolean, 
     sidebarOpen: boolean,
-    variant?: "default" | "forge"
+    variant?: "default" | "forge" | "nexus"
 }) {
-  const activeClass = variant === "forge" 
-    ? "bg-orange-500/10 text-orange-400 border border-orange-500/20"
-    : "bg-blue-600/10 text-blue-400 border border-blue-600/20";
+  const getActiveClass = () => {
+    if (variant === "forge") return "bg-orange-500/10 text-orange-400 border border-orange-500/20";
+    if (variant === "nexus") return "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20";
+    return "bg-blue-600/10 text-blue-400 border border-blue-600/20";
+  };
 
   return (
     <Link href={href} className={`
       flex items-center gap-4 px-4 py-3 rounded-xl cursor-pointer transition-all
-      ${active ? activeClass : "text-white/60 hover:bg-white/5 hover:text-white"}
+      ${active ? getActiveClass() : "text-white/60 hover:bg-white/5 hover:text-white"}
     `}>
       {icon}
       {sidebarOpen && <span className="font-medium text-sm">{label}</span>}
@@ -144,4 +152,5 @@ function NavItem({
     </Link>
   );
 }
+
 
