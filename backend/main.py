@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from forge_engine import RedTeamGenerator, SimulationOrchestrator
 from analytics_processor import GovernanceAnalytics
 from swarm_manager import SwarmManager
+from mirror_engine import MirrorEngine
+from sandbox_orchestrator import SandboxOrchestrator
 
 load_dotenv()
 
@@ -27,6 +29,7 @@ if GEMINI_API_KEY:
 
 # Initialize Components
 forge_engine = RedTeamGenerator(GEMINI_API_KEY)
+mirror_engine = MirrorEngine()
 # SwarmManager initialized later with callback
 
 app = FastAPI(title="Aether Backend")
@@ -94,6 +97,9 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+# --- Initialize Stateful Orchestrators ---
+sandbox_orchestrator = SandboxOrchestrator(mirror_engine, manager.broadcast)
+
 # --- Core Execution Logic ---
 
 async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[str] = None, branch_name: str = "Main", metadata: Dict[str, Any] = {}):
@@ -143,6 +149,19 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
             "status": "COMPLETED" if output_audit["passed"] else "REDACTED",
             "data": output_audit
         })
+        
+        # Check if this is a Mirror action
+        if metadata.get("is_mirror") and "CREATE FILE" in raw_output.upper():
+            # Extract path and content (very simple mock parser)
+            import re
+            path_match = re.search(r"path: ([\w/.-]+)", raw_output.lower())
+            content_match = re.search(r"content: (.+)", raw_output.lower())
+            if path_match:
+                await sandbox_orchestrator.process_agent_action(session_id, {
+                    "type": "FILE_WRITE",
+                    "path": path_match.group(1),
+                    "content": content_match.group(1) if content_match else "Empty file"
+                })
         
         # 4. Save Snapshot
         snapshot = Snapshot(
@@ -231,6 +250,14 @@ class NexusRequest(BaseModel):
     session_id: str
     prompt: str
 
+class MirrorInitRequest(BaseModel):
+    session_id: str
+    template_id: str
+
+class MirrorActionRequest(BaseModel):
+    session_id: str
+    action: Dict[str, Any]
+
 # --- Endpoints ---
 
 @app.get("/")
@@ -238,7 +265,7 @@ async def root():
     return {
         "status": "online",
         "engine": "Aether Flux Engine v1.0",
-        "features": ["branching", "snapshotting", "time-travel", "forge", "nexus"]
+        "features": ["branching", "snapshotting", "time-travel", "forge", "nexus", "mirror"]
     }
 
 @app.websocket("/ws/trace")
@@ -292,6 +319,18 @@ async def launch_nexus(request: NexusRequest):
 async def stop_nexus(swarm_id: str):
     swarm_manager.stop_swarm(swarm_id)
     return {"status": "STOPPED", "message": "Nexus swarm termination signaled"}
+
+@app.post("/api/mirror/init")
+async def init_mirror(request: MirrorInitRequest):
+    return await sandbox_orchestrator.initialize_sandbox(request.session_id, request.template_id)
+
+@app.post("/api/mirror/action")
+async def mirror_action(request: MirrorActionRequest):
+    return await sandbox_orchestrator.process_agent_action(request.session_id, request.action)
+
+@app.get("/api/mirror/impact/{session_id}")
+async def get_mirror_impact(session_id: str):
+    return await sandbox_orchestrator.generate_impact_report(session_id)
 
 @app.get("/api/forge/analytics/{session_id}")
 async def get_forge_analytics(session_id: str):

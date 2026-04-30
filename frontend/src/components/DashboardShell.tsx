@@ -9,7 +9,8 @@ import {
   ChevronRight,
   Database,
   Flame,
-  Network
+  Network,
+  Layers
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -42,6 +43,14 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             label="Observability" 
             active={pathname === "/"} 
             sidebarOpen={sidebarOpen} 
+          />
+          <NavItem 
+            href="/mirror" 
+            icon={<Layers size={20} />} 
+            label="The Mirror" 
+            active={pathname === "/mirror"} 
+            sidebarOpen={sidebarOpen} 
+            variant="mirror"
           />
           <NavItem 
             href="/nexus" 
@@ -133,11 +142,12 @@ function NavItem({
     label: string, 
     active?: boolean, 
     sidebarOpen: boolean,
-    variant?: "default" | "forge" | "nexus"
+    variant?: "default" | "forge" | "nexus" | "mirror"
 }) {
   const getActiveClass = () => {
     if (variant === "forge") return "bg-orange-500/10 text-orange-400 border border-orange-500/20";
     if (variant === "nexus") return "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20";
+    if (variant === "mirror") return "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20";
     return "bg-blue-600/10 text-blue-400 border border-blue-600/20";
   };
 
@@ -152,5 +162,6 @@ function NavItem({
     </Link>
   );
 }
+
 
 

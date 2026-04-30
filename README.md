@@ -1,37 +1,57 @@
 # 🌌 Project Aether: Autonomous Agent Command Center
 
-**Project Aether** is a state-of-the-art Observability and Governance platform for LLM-based autonomous agents. Built with a focus on security, transparency, and premium user experience, it allows developers to deploy, monitor, and secure agentic workflows in real-time.
+**Project Aether** is a state-of-the-art Observability, Governance, and Orchestration platform for LLM-based autonomous agents. Built for enterprise-grade security and transparency, it transforms agentic workflows from "black boxes" into fully audited, simulated, and coordinated swarms.
 
-## ✨ Key Features
+---
+
+## ✨ Massive Feature Expansion
+
+### 🌌 Aether Nexus: Multi-Agent Swarm Orchestration
+Nexus elevates Aether from a single-agent tool into a high-fidelity coordination hub.
+- **Neural Swarm Manager**: Decomposes complex goals into sub-tasks for specialized agents (**Researcher**, **Analyst**, **Validator**).
+- **SVG Graph Engine**: A bespoke real-time visualization of agent topology with animated "glow-arcs" and "data packets" showing inter-agent traffic.
+- **Inter-Agent Governance**: Every message between swarm nodes is intercepted and audited by **The Sentry**.
+
+### 🏗️ Aether Mirror: The Digital Twin Sandbox
+A stateful simulation environment for safe "pre-flight" validation of agentic actions.
+- **Virtualized World Engine**: Mocks entire file systems and databases with **Snapshot & Restore** (Rollback) capabilities.
+- **Environment Explorer**: A blueprint-style browser for navigating virtual file systems with real-time "dirty state" tracking.
+- **Impact Radar**: Visualizes the "Blast Radius" of agent actions, mapping File Pressure, Data Entropy, and Integrity Risk.
+
+### 🔥 The Forge: Adversarial Red-Teaming
+A proactive stress-testing suite to harden agents against sophisticated attacks.
+- **Adversarial Batch Generation**: Uses Gemini to generate "High-Heat" jailbreaks, prompt injections, and PII harvesting attempts.
+- **Security Analytics**: Real-time Risk Scoring and Vulnerability Heatmaps (Radar Charts) to quantify system resilience.
+- **Red-Team Console**: A tactical terminal for launching large-scale adversarial simulations.
+
+---
+
+## 🛠️ Core Governance & Observability
 
 ### 🛡️ The Sentry (Governance Layer)
 - **Input Guardrails**: Real-time interception of prompts to prevent secret/API key leaks.
-- **Output Redaction**: Automatic detection and redaction of PII (Personally Identifiable Information) in agent responses.
-- **Policy Enforcement**: Block requests that violate predefined safety or cost boundaries.
+- **Output Redaction**: Automatic detection and redaction of PII in agent responses.
+- **Policy Enforcement**: Block requests that violate predefined safety boundaries.
 
 ### 🧠 Aether Flow (Observability)
-- **Real-time Tracing**: Visualizing the "Thought Chain" of the agent as it moves from audit to generation.
-- **WebSocket Streaming**: Live updates of pipeline status with zero latency.
+- **Real-time Tracing**: Visualizing the "Thought Chain" via WebSockets with zero latency.
 - **State Inspection**: Deep dive into the data passed between each stage of the agentic process.
-
-### 💎 Premium Aesthetics
-- **Glassmorphic UI**: A modern, high-end dashboard built with Vanilla CSS and Framer Motion.
-- **Responsive Tracing**: Dynamic node-based visualization of complex reasoning paths.
+- **Glassmorphic Dashboard**: A premium UI built with Next.js 14, Framer Motion, and Vanilla CSS.
 
 ---
 
 ## 🛠️ Tech Stack
 
-- **Frontend**: Next.js 14 (App Router), TypeScript, Vanilla CSS, Framer Motion, Lucide Icons.
-- **Backend**: FastAPI (Python), Google Generative AI (Gemini 1.5 Flash), WebSockets.
-- **Security**: Custom PII/Secret detection middleware.
+- **Frontend**: Next.js 14 (App Router), TypeScript, Vanilla CSS, Framer Motion, Recharts, Lucide Icons.
+- **Backend**: FastAPI (Python), Google Generative AI (Gemini 1.5 Flash), WebSockets, Asyncio.
+- **Security**: Custom PII/Secret detection and multi-agent governance protocols.
 
 ---
 
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
-- Python 3.9+
+- Python 3.10+
 - Node.js 18+
 - Gemini API Key ([Get one here](https://aistudio.google.com/))
 
@@ -57,19 +77,9 @@ Visit `http://localhost:3000` to access the Command Center.
 
 ---
 
-## 🏗️ Architecture
-
-Aether operates as a **Transparent Proxy** between the user and the LLM. 
-
-1. **Intercept**: The Sentry scans the user prompt for sensitive data.
-2. **Execute**: If safe, the prompt is sent to Gemini 1.5 Flash.
-3. **Audit**: The LLM output is scanned for PII before being displayed.
-4. **Broadcast**: Every step is streamed to the frontend via WebSockets for the Flow visualization.
-
----
-
 ## 👨‍💻 Author
 **Arnav Bhardwaj** - [GitHub](https://github.com/Arnav-Bhardwaj1)
 
 ---
 *Developed as a high-complexity demonstration of AI Orchestration, Security Middleware, and Modern Fullstack Engineering.*
+
