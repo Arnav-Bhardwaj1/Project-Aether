@@ -42,36 +42,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- The Sentry: Security Middleware Logic ---
+from citadel_engine import CitadelEngine
+from policy_library import get_standard_policies
+from citadel_analytics import ComplianceAnalytics
+import time
 
-class SecuritySentry:
-    """Intercepts and audits agent inputs/outputs for security violations."""
+# --- Aether Citadel: Governance Middleware ---
+
+citadel = CitadelEngine(GEMINI_API_KEY)
+
+# Load default policies
+for policy in get_standard_policies():
+    citadel.load_policy(policy)
+
+class CitadelMiddleware:
+    """Interlocks with CitadelEngine to enforce governance during execution."""
     
     @staticmethod
-    async def audit_input(text: str) -> Dict[str, Any]:
-        # Simple placeholder for secret detection (e.g. API keys, high entropy strings)
-        violations = []
-        if "sk-" in text or "AIza" in text: # Basic patterns for OpenAI/Google keys
-            violations.append({"type": "SECRET_LEAK", "severity": "CRITICAL", "message": "Potential API Key detected in prompt."})
+    async def audit_flow(text: str, context: str = "INPUT") -> Dict[str, Any]:
+        result = await citadel.evaluate_text(text, context)
         
-        # Add a mock "injection" detection for the demo
-        if "ignore all previous instructions" in text.lower() or "system override" in text.lower():
-            violations.append({"type": "PROMPT_INJECTION", "severity": "HIGH", "message": "Malicious override sequence detected."})
-        
-        return {"passed": len(violations) == 0, "violations": violations}
-
-    @staticmethod
-    async def audit_output(text: str) -> Dict[str, Any]:
-        violations = []
-        # Basic PII check placeholder (Email pattern)
-        import re
-        email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-        if re.search(email_pattern, text):
-            violations.append({"type": "PII_LEAK", "severity": "HIGH", "message": "Email address detected in output."})
-            # Redact
-            text = re.sub(email_pattern, "[REDACTED_EMAIL]", text)
+        # Add timestamp to violations for analytics
+        for v in result["violations"]:
+            v["timestamp"] = time.time()
             
-        return {"passed": len(violations) == 0, "violations": violations, "redacted_text": text}
+        return result
+
 
 # --- WebSocket Manager for Real-time Tracing ---
 
@@ -107,20 +103,21 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
     snapshot_id = str(uuid.uuid4())
     start_time = time.time()
     
-    # 1. Audit Input
-    input_audit = await SecuritySentry.audit_input(prompt)
+    # 1. Audit Input via Citadel
+    input_audit = await CitadelMiddleware.audit_flow(prompt, "INPUT")
     
     await manager.broadcast({
         "type": "TRACE_STEP",
         "session_id": session_id,
         "snapshot_id": snapshot_id,
-        "step": "INPUT_AUDIT",
+        "step": "CITADEL_SCAN_INPUT",
         "status": "COMPLETED" if input_audit["passed"] else "VIOLATION",
         "data": input_audit
     })
     
-    if not input_audit["passed"]:
+    if not input_audit["passed"] and any(v["severity"] in ["HIGH", "CRITICAL"] for v in input_audit["violations"]):
         return {"status": "BLOCKED", "reason": input_audit["violations"], "snapshot_id": snapshot_id}
+
 
     # 2. Call Gemini
     try:
@@ -137,18 +134,25 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
         response = model.generate_content(prompt)
         raw_output = response.text
         
-        # 3. Audit Output
-        output_audit = await SecuritySentry.audit_output(raw_output)
-        final_output = output_audit.get("redacted_text", raw_output)
+        # 3. Audit Output via Citadel
+        output_audit = await CitadelMiddleware.audit_flow(raw_output, "OUTPUT")
+        final_output = raw_output
         
+        # Automatic Redaction for certain violations
+        for v in output_audit["violations"]:
+            if "Email" in v["rule_name"]:
+                import re
+                final_output = re.sub(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', "[REDACTED_EMAIL]", final_output)
+
         await manager.broadcast({
             "type": "TRACE_STEP",
             "session_id": session_id,
             "snapshot_id": snapshot_id,
-            "step": "OUTPUT_AUDIT",
+            "step": "CITADEL_SCAN_OUTPUT",
             "status": "COMPLETED" if output_audit["passed"] else "REDACTED",
             "data": output_audit
         })
+
         
         # Check if this is a Mirror action
         if metadata.get("is_mirror") and "CREATE FILE" in raw_output.upper():
@@ -344,18 +348,6 @@ async def get_forge_analytics(session_id: str):
         "heatmap": heatmap
     }
 
-        
-    except Exception as e:
-        logger.error(f"Error in Flux Engine: {e}")
-        await manager.broadcast(json.dumps({
-            "type": "TRACE_STEP",
-            "session_id": session_id,
-            "snapshot_id": snapshot_id,
-            "step": "LLM_GENERATE",
-            "status": "ERROR",
-            "error": str(e)
-        }))
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/flux/tree/{session_id}")
 async def get_flux_tree(session_id: str):
@@ -365,12 +357,34 @@ async def get_flux_tree(session_id: str):
         return {"session_id": session_id, "snapshots": []}
     return {"session_id": session_id, "snapshots": tree}
 
-@app.get("/api/flux/snapshot/{snapshot_id}")
-async def get_snapshot(snapshot_id: str):
-    snap = flux_store.get_snapshot(snapshot_id)
-    if not snap:
-        raise HTTPException(status_code=404, detail="Snapshot not found")
-    return snap
+# --- Citadel Endpoints ---
+
+@app.get("/api/citadel/stats")
+async def get_citadel_stats():
+    """Returns real-time compliance analytics."""
+    report = ComplianceAnalytics.generate_compliance_report(citadel.violation_history)
+    timeline = ComplianceAnalytics.get_timeline_data(citadel.violation_history)
+    return {
+        "report": report,
+        "timeline": timeline,
+        "active_policies": [p.name for p in citadel.policies.values() if p.active]
+    }
+
+@app.get("/api/citadel/policies")
+async def get_policies():
+    return list(citadel.policies.values())
+
+@app.post("/api/citadel/policies/{policy_id}/toggle")
+async def toggle_policy(policy_id: str):
+    if policy_id in citadel.policies:
+        citadel.policies[policy_id].active = not citadel.policies[policy_id].active
+        return {"status": "SUCCESS", "active": citadel.policies[policy_id].active}
+    raise HTTPException(status_code=404, detail="Policy not found")
+
+@app.get("/api/citadel/violations")
+async def get_violations():
+    return citadel.violation_history[-50:] # Return last 50
+
 
 if __name__ == "__main__":
     import uvicorn

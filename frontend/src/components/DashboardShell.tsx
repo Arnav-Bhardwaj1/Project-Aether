@@ -69,10 +69,10 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             variant="forge"
           />
           <NavItem 
-            href="/sentry" 
+            href="/citadel" 
             icon={<Shield size={20} />} 
-            label="The Sentry" 
-            active={pathname === "/sentry"} 
+            label="The Citadel" 
+            active={pathname === "/citadel"} 
             sidebarOpen={sidebarOpen} 
           />
           <NavItem 

@@ -42,8 +42,8 @@ A proactive stress-testing suite to harden agents against sophisticated attacks.
 
 ## 🛠️ Tech Stack
 
-- **Frontend**: Next.js 14 (App Router), TypeScript, Vanilla CSS, Framer Motion, Recharts, Lucide Icons.
-- **Backend**: FastAPI (Python), Google Generative AI (Gemini 1.5 Flash), WebSockets, Asyncio.
+- **Frontend**: Next.js, TypeScript, Vanilla CSS, Framer Motion, Recharts, Lucide Icons.
+- **Backend**: FastAPI, Python, Google Generative AI, WebSockets, Asyncio.
 - **Security**: Custom PII/Secret detection and multi-agent governance protocols.
 
 ---
@@ -52,8 +52,7 @@ A proactive stress-testing suite to harden agents against sophisticated attacks.
 
 ### 1. Prerequisites
 - Python 3.10+
-- Node.js 18+
-- Gemini API Key ([Get one here](https://aistudio.google.com/))
+- Node.js
 
 ### 2. Backend Setup
 ```bash
