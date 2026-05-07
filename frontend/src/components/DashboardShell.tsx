@@ -76,8 +76,15 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             sidebarOpen={sidebarOpen} 
           />
           <NavItem 
-            href="/history" 
+            href="/chronos" 
             icon={<Clock size={20} />} 
+            label="The Chronos" 
+            active={pathname === "/chronos"} 
+            sidebarOpen={sidebarOpen} 
+          />
+          <NavItem 
+            href="/history" 
+            icon={<History size={20} />} 
             label="History" 
             active={pathname === "/history"} 
             sidebarOpen={sidebarOpen} 

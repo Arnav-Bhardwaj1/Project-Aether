@@ -15,6 +15,10 @@ from analytics_processor import GovernanceAnalytics
 from swarm_manager import SwarmManager
 from mirror_engine import MirrorEngine
 from sandbox_orchestrator import SandboxOrchestrator
+from chronos_engine import ChronosEngine, TemporalFrame
+from state_manager import StateManager
+from branch_orchestrator import BranchOrchestrator
+
 
 load_dotenv()
 
@@ -30,7 +34,10 @@ if GEMINI_API_KEY:
 # Initialize Components
 forge_engine = RedTeamGenerator(GEMINI_API_KEY)
 mirror_engine = MirrorEngine()
+chronos = ChronosEngine()
+branch_orchestrator = BranchOrchestrator(chronos)
 # SwarmManager initialized later with callback
+
 
 app = FastAPI(title="Aether Backend")
 
@@ -167,7 +174,7 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
                     "content": content_match.group(1) if content_match else "Empty file"
                 })
         
-        # 4. Save Snapshot
+        # 4. Save Snapshot & Record Temporal Frame
         snapshot = Snapshot(
             id=snapshot_id,
             parent_id=parent_id,
@@ -185,6 +192,27 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
             timestamp=time.time()
         )
         flux_store.add_snapshot(snapshot)
+
+        # Chronos Recording
+        current_world_state = mirror_engine.get_session_state(session_id) if metadata.get("is_mirror") else {}
+        serialized_state = StateManager.serialize_state({"prompt": prompt, "response": final_output}, current_world_state)
+        
+        # Simple delta logic: Compare with previous frame if exists
+        timeline = chronos.get_timeline(session_id)
+        delta = serialized_state
+        if timeline:
+            # Reconstruction would be needed for true delta, using simplified version for now
+            pass
+
+        chronos.record_frame(TemporalFrame(
+            id=snapshot_id,
+            session_id=session_id,
+            parent_id=parent_id,
+            timestamp=time.time(),
+            state_delta=delta,
+            event_type="ACTION",
+            metadata=metadata
+        ))
         
         return {
             "status": "SUCCESS",
@@ -193,6 +221,7 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
             "output": final_output,
             "violations": output_audit["violations"]
         }
+
     except Exception as e:
         logger.error(f"Error in execution: {e}")
         return {"status": "ERROR", "error": str(e)}
@@ -381,9 +410,35 @@ async def toggle_policy(policy_id: str):
         return {"status": "SUCCESS", "active": citadel.policies[policy_id].active}
     raise HTTPException(status_code=404, detail="Policy not found")
 
-@app.get("/api/citadel/violations")
-async def get_violations():
-    return citadel.violation_history[-50:] # Return last 50
+# --- Chronos Endpoints ---
+
+@app.get("/api/chronos/timeline/{session_id}")
+async def get_chronos_timeline(session_id: str):
+    timeline = chronos.get_timeline(session_id)
+    stats = chronos.get_session_stats(session_id)
+    return {
+        "timeline": timeline,
+        "stats": stats
+    }
+
+@app.post("/api/chronos/fork")
+async def fork_session(request: Dict[str, Any]):
+    session_id = request.get("session_id")
+    frame_id = request.get("frame_id")
+    name = request.get("name", "Unnamed Fork")
+    
+    if not session_id or not frame_id:
+        raise HTTPException(status_code=400, detail="Missing session_id or frame_id")
+        
+    try:
+        result = branch_orchestrator.fork_session(session_id, frame_id, name)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/chronos/branches/{root_id}")
+async def get_branches(root_id: str):
+    return branch_orchestrator.get_all_branches(root_id)
 
 
 if __name__ == "__main__":
