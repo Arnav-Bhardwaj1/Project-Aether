@@ -5,3 +5,5 @@ python-dotenv
 pydantic
 websockets
 python-multipart
+numpy
+scipy

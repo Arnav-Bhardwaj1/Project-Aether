@@ -18,6 +18,10 @@ from sandbox_orchestrator import SandboxOrchestrator
 from chronos_engine import ChronosEngine, TemporalFrame
 from state_manager import StateManager
 from branch_orchestrator import BranchOrchestrator
+from pulse_engine import PulseEngine
+from metric_synthesizer import MetricSynthesizer
+from alert_manager import AlertManager
+
 
 
 load_dotenv()
@@ -36,7 +40,11 @@ forge_engine = RedTeamGenerator(GEMINI_API_KEY)
 mirror_engine = MirrorEngine()
 chronos = ChronosEngine()
 branch_orchestrator = BranchOrchestrator(chronos)
+pulse_engine = PulseEngine()
+metric_synthesizer = MetricSynthesizer(GEMINI_API_KEY)
+alert_manager = AlertManager()
 # SwarmManager initialized later with callback
+
 
 
 app = FastAPI(title="Aether Backend")
@@ -213,6 +221,16 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
             event_type="ACTION",
             metadata=metadata
         ))
+
+        # Pulse Recording
+        latency = time.time() - start_time
+        pulse_engine.record_metric("latency", latency)
+        pulse_engine.record_metric("violation_risk", float(len(output_audit["violations"])))
+        
+        # Generate alert if anomaly detected
+        recent_anomalies = pulse_engine.get_recent_anomalies(1)
+        if recent_anomalies and recent_anomalies[0]["timestamp"] > time.time() - 5:
+            alert_manager.generate_alert(recent_anomalies[0])
         
         return {
             "status": "SUCCESS",
@@ -221,6 +239,7 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
             "output": final_output,
             "violations": output_audit["violations"]
         }
+
 
     except Exception as e:
         logger.error(f"Error in execution: {e}")
@@ -436,9 +455,32 @@ async def fork_session(request: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/chronos/branches/{root_id}")
-async def get_branches(root_id: str):
-    return branch_orchestrator.get_all_branches(root_id)
+# --- Pulse Endpoints ---
+
+@app.get("/api/pulse/live")
+async def get_live_pulse():
+    return {
+        "heartbeat": pulse_engine.get_live_pulse(),
+        "health_score": pulse_engine.synthesize_health_score(),
+        "active_alerts_count": len(alert_manager.get_active_alerts())
+    }
+
+@app.get("/api/pulse/alerts")
+async def get_alerts():
+    return alert_manager.get_active_alerts()
+
+@app.get("/api/pulse/metrics/{session_id}")
+async def get_session_metrics(session_id: str):
+    # In a real app, we would load the trace log
+    # For demo, we synthesize from a mock trace
+    mock_trace = "Agent started. Executed tool. Accessed database. No violations."
+    metrics = await metric_synthesizer.synthesize_session_metrics(session_id, mock_trace)
+    radar = metric_synthesizer.get_radar_data(metrics)
+    return {
+        "metrics": metrics,
+        "radar": radar
+    }
+
 
 
 if __name__ == "__main__":

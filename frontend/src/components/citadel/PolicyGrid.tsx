@@ -79,8 +79,8 @@ export default function PolicyGrid({ policies }: PolicyGridProps) {
                     <div className="text-[10px] text-zinc-500">{rule.type}</div>
                   </div>
                 </div>
-                <div className="opacity-0 group-hover/rule:opacity-100 transition-opacity">
-                  <Info className="w-3.5 h-3.5 text-zinc-600 cursor-help" title={rule.description} />
+                <div className="opacity-0 group-hover/rule:opacity-100 transition-opacity" title={rule.description}>
+                  <Info className="w-3.5 h-3.5 text-zinc-600 cursor-help" />
                 </div>
               </div>
             ))}

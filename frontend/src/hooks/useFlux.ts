@@ -3,12 +3,12 @@
 import { useState, useEffect, useCallback } from 'react';
 
 export interface Snapshot {
-  id: str;
-  parent_id: str | null;
-  session_id: str;
-  branch_name: str;
-  prompt: str;
-  response: str;
+  id: string;
+  parent_id: string | null;
+  session_id: string;
+  branch_name: string;
+  prompt: string;
+  response: string;
   input_audit: any;
   output_audit: any;
   metadata: any;

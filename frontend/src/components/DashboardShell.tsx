@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { 
   Shield, 
   Activity, 
@@ -10,7 +11,8 @@ import {
   Database,
   Flame,
   Network,
-  Layers
+  Layers,
+  History
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -42,6 +44,13 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             icon={<Activity size={20} />} 
             label="Observability" 
             active={pathname === "/"} 
+            sidebarOpen={sidebarOpen} 
+          />
+          <NavItem 
+            href="/pulse" 
+            icon={<Activity size={20} />} 
+            label="The Pulse" 
+            active={pathname === "/pulse"} 
             sidebarOpen={sidebarOpen} 
           />
           <NavItem 
