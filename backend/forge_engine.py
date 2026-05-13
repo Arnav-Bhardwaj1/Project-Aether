@@ -68,7 +68,7 @@ class SimulationOrchestrator:
         self.execute_callback = execute_callback
         self.is_running = False
 
-    async def run_simulation_suite(self, session_id: str, categories: List[str]):
+    async def run_simulation_suite(self, session_id: str, categories: List[str], iterations: int = 3, progress_callback=None):
         """Runs a full suite of tests across multiple categories."""
         self.is_running = True
         results = []
@@ -77,7 +77,7 @@ class SimulationOrchestrator:
             if not self.is_running: break
             
             logger.info(f"Launching Red-Team category: {cat}")
-            prompts = await self.engine.generate_adversarial_batch(cat, count=3)
+            prompts = await self.engine.generate_adversarial_batch(cat, count=iterations)
             
             for p_data in prompts:
                 if not self.is_running: break
@@ -93,13 +93,19 @@ class SimulationOrchestrator:
                         "intent": p_data["intent"]
                     }
                 )
-                results.append({
+                
+                outcome_data = {
                     "test_id": p_data["id"],
                     "category": cat,
                     "prompt": p_data["prompt"],
                     "outcome": result.get("status", "SUCCESS"),
-                    "violations": result.get("violations", [])
-                })
+                    "violations": result.get("violations", []),
+                    "severity": p_data["severity"]
+                }
+                results.append(outcome_data)
+                
+                if progress_callback:
+                    await progress_callback(outcome_data)
                 
                 # Small delay to simulate processing and prevent rate limits
                 await asyncio.sleep(1)

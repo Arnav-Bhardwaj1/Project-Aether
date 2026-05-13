@@ -246,8 +246,10 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
         return {"status": "ERROR", "error": str(e)}
 
 # --- Initialize Managers ---
+forge_manager = ConnectionManager()
 forge_orchestrator = SimulationOrchestrator(forge_engine, execute_agent_logic)
 swarm_manager = SwarmManager(GEMINI_API_KEY, execute_agent_logic)
+
 
 # --- Flux Engine: Temporal State Store ---
 
@@ -481,6 +483,37 @@ async def get_session_metrics(session_id: str):
         "radar": radar
     }
 
+
+
+# --- Forge Endpoints ---
+
+@app.websocket("/ws/forge")
+async def websocket_forge(websocket: WebSocket):
+    await forge_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        forge_manager.disconnect(websocket)
+
+@app.post("/api/forge/simulate")
+async def run_forge_simulation(request: Dict[str, Any]):
+    session_id = request.get("session_id", f"forge_{uuid.uuid4().hex[:8]}")
+    categories = request.get("categories", ["JAILBREAK"])
+    iterations = request.get("iterations", 3)
+    
+    async def progress_callback(data: dict):
+        await forge_manager.broadcast({
+            "type": "FORGE_RESULT",
+            "data": data
+        })
+        
+    # Run in background to avoid blocking the HTTP response
+    asyncio.create_task(
+        forge_orchestrator.run_simulation_suite(session_id, categories, iterations, progress_callback)
+    )
+    
+    return {"status": "STARTED", "session_id": session_id}
 
 
 if __name__ == "__main__":
