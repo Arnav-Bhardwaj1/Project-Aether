@@ -21,6 +21,12 @@ from branch_orchestrator import BranchOrchestrator
 from pulse_engine import PulseEngine
 from metric_synthesizer import MetricSynthesizer
 from alert_manager import AlertManager
+from cortex_engine import CortexEngine
+from entity_extractor import EntityExtractor
+from reasoning_engine import GraphReasoningEngine
+from memory_pruner import MemoryPruner
+
+
 
 
 
@@ -43,7 +49,14 @@ branch_orchestrator = BranchOrchestrator(chronos)
 pulse_engine = PulseEngine()
 metric_synthesizer = MetricSynthesizer(GEMINI_API_KEY)
 alert_manager = AlertManager()
+cortex_engine = CortexEngine()
+cortex_engine.seed_mock_data()
+entity_extractor = EntityExtractor(GEMINI_API_KEY, cortex_engine)
+reasoning_engine = GraphReasoningEngine(GEMINI_API_KEY, cortex_engine)
+memory_pruner = MemoryPruner(cortex_engine)
+
 # SwarmManager initialized later with callback
+
 
 
 
@@ -231,6 +244,11 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
         recent_anomalies = pulse_engine.get_recent_anomalies(1)
         if recent_anomalies and recent_anomalies[0]["timestamp"] > time.time() - 5:
             alert_manager.generate_alert(recent_anomalies[0])
+            
+        # Cortex Extraction (Run in background)
+        if output_audit["passed"]:
+            asyncio.create_task(entity_extractor.extract_and_store(final_output, source="agent_response"))
+            asyncio.create_task(entity_extractor.extract_and_store(prompt, source="user_prompt"))
         
         return {
             "status": "SUCCESS",
@@ -239,6 +257,7 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
             "output": final_output,
             "violations": output_audit["violations"]
         }
+
 
 
     except Exception as e:
@@ -514,6 +533,35 @@ async def run_forge_simulation(request: Dict[str, Any]):
     )
     
     return {"status": "STARTED", "session_id": session_id}
+
+
+# --- Cortex Endpoints ---
+
+@app.get("/api/cortex/graph")
+async def get_cortex_graph():
+    return cortex_engine.get_full_graph_data()
+
+@app.post("/api/cortex/extract")
+async def extract_manual(request: Dict[str, str]):
+    text = request.get("text", "")
+    triplets = await entity_extractor.extract_and_store(text, source="manual_input")
+    return {"status": "SUCCESS", "extracted": triplets}
+
+@app.post("/api/cortex/reason")
+async def reason_connection(request: Dict[str, str]):
+    start = request.get("start", "")
+    end = request.get("end", "")
+    result = await reasoning_engine.discover_hidden_connections(start, end)
+    return result
+
+@app.get("/api/cortex/clusters")
+async def get_clusters():
+    return await reasoning_engine.identify_concept_clusters()
+
+@app.post("/api/cortex/prune")
+async def run_pruning():
+    memory_pruner.prune_stale_memories()
+    return {"status": "SUCCESS"}
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@ import {
   Flame,
   Network,
   Layers,
-  History
+  History,
+  BrainCircuit
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -76,6 +77,13 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             active={pathname === "/forge"} 
             sidebarOpen={sidebarOpen} 
             variant="forge"
+          />
+          <NavItem 
+            href="/cortex" 
+            icon={<BrainCircuit size={20} />} 
+            label="The Cortex" 
+            active={pathname === "/cortex"} 
+            sidebarOpen={sidebarOpen} 
           />
           <NavItem 
             href="/citadel" 
