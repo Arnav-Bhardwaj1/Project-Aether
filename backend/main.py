@@ -25,6 +25,8 @@ from cortex_engine import CortexEngine
 from entity_extractor import EntityExtractor
 from reasoning_engine import GraphReasoningEngine
 from memory_pruner import MemoryPruner
+from echo_engine import EchoEngine
+
 
 
 
@@ -54,6 +56,8 @@ cortex_engine.seed_mock_data()
 entity_extractor = EntityExtractor(GEMINI_API_KEY, cortex_engine)
 reasoning_engine = GraphReasoningEngine(GEMINI_API_KEY, cortex_engine)
 memory_pruner = MemoryPruner(cortex_engine)
+echo_engine = EchoEngine()
+
 
 # SwarmManager initialized later with callback
 
@@ -159,7 +163,18 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
             "status": "IN_PROGRESS"
         })
         
-        response = model.generate_content(prompt)
+        # Aether Echo: Dynamic Few-Shot Exemplar Injection
+        exemplars = echo_engine.retrieve_exemplars(prompt, limit=2)
+        final_prompt = prompt
+        if exemplars:
+            few_shot_block = "Use the following verified positive examples to guide your response formatting, tone, and security alignment:\n\n"
+            for ex in exemplars:
+                few_shot_block += f"User Prompt: {ex['prompt']}\nAligned Response: {ex['corrected_response'] if ex['corrected_response'] else ex['original_response']}\n\n"
+            few_shot_block += f"Now, respond to the current request:\nUser Prompt: {prompt}\nAligned Response:"
+            final_prompt = few_shot_block
+            logger.info(f"Aether Echo: Injected {len(exemplars)} dynamic few-shot examples into agent prompt.")
+
+        response = model.generate_content(final_prompt)
         raw_output = response.text
         
         # 3. Audit Output via Citadel
@@ -249,6 +264,20 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
         if output_audit["passed"]:
             asyncio.create_task(entity_extractor.extract_and_store(final_output, source="agent_response"))
             asyncio.create_task(entity_extractor.extract_and_store(prompt, source="user_prompt"))
+            
+        # Aether Echo Logging: Auto-register log for review
+        try:
+            echo_engine.add_feedback(
+                trace_id=snapshot_id,
+                session_id=session_id,
+                prompt=prompt,
+                original_response=final_output,
+                corrected_response="",
+                rating="PENDING",
+                tags=["Citadel Blocked"] if not output_audit["passed"] else ["Agent Run"]
+            )
+        except Exception as e:
+            logger.error(f"Echo logging failed: {e}")
         
         return {
             "status": "SUCCESS",
@@ -562,6 +591,45 @@ async def get_clusters():
 async def run_pruning():
     memory_pruner.prune_stale_memories()
     return {"status": "SUCCESS"}
+
+
+# --- Echo (RLHF) Endpoints ---
+
+@app.get("/api/echo/logs")
+async def get_echo_logs():
+    return echo_engine.get_logs()
+
+@app.post("/api/echo/feedback")
+async def submit_echo_feedback(request: Dict[str, Any]):
+    trace_id = request.get("trace_id", "")
+    session_id = request.get("session_id", "")
+    prompt = request.get("prompt", "")
+    original_response = request.get("original_response", "")
+    corrected_response = request.get("corrected_response", "")
+    rating = request.get("rating", "PENDING")
+    tags = request.get("tags", [])
+    
+    entry = echo_engine.add_feedback(
+        trace_id=trace_id,
+        session_id=session_id,
+        prompt=prompt,
+        original_response=original_response,
+        corrected_response=corrected_response,
+        rating=rating,
+        tags=tags
+    )
+    return {"status": "SUCCESS", "entry": entry}
+
+@app.get("/api/echo/stats")
+async def get_echo_stats():
+    return echo_engine.get_alignment_stats()
+
+@app.post("/api/echo/export")
+async def export_tuning_dataset(request: Dict[str, Any]):
+    format_type = request.get("format", "GEMINI")
+    tags = request.get("tags", None)
+    dataset_jsonl = echo_engine.compile_jsonl(format_type, tags)
+    return {"status": "SUCCESS", "jsonl": dataset_jsonl}
 
 
 if __name__ == "__main__":
