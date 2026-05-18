@@ -94,6 +94,13 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             sidebarOpen={sidebarOpen} 
           />
           <NavItem 
+            href="/loom" 
+            icon={<Layers size={20} />} 
+            label="The Loom" 
+            active={pathname === "/loom"} 
+            sidebarOpen={sidebarOpen} 
+          />
+          <NavItem 
             href="/citadel" 
             icon={<Shield size={20} />} 
             label="The Citadel" 

@@ -26,6 +26,8 @@ from entity_extractor import EntityExtractor
 from reasoning_engine import GraphReasoningEngine
 from memory_pruner import MemoryPruner
 from echo_engine import EchoEngine
+from loom_engine import LoomWorkflowExecutor
+
 
 
 
@@ -57,6 +59,8 @@ entity_extractor = EntityExtractor(GEMINI_API_KEY, cortex_engine)
 reasoning_engine = GraphReasoningEngine(GEMINI_API_KEY, cortex_engine)
 memory_pruner = MemoryPruner(cortex_engine)
 echo_engine = EchoEngine()
+loom_executor = LoomWorkflowExecutor(cortex_engine, echo_engine, mirror_engine, GEMINI_API_KEY)
+
 
 
 # SwarmManager initialized later with callback
@@ -352,6 +356,12 @@ class NexusRequest(BaseModel):
     session_id: str
     prompt: str
 
+class LoomRunRequest(BaseModel):
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, Any]]
+    input: str
+    session_id: str
+
 class MirrorInitRequest(BaseModel):
     session_id: str
     template_id: str
@@ -630,6 +640,37 @@ async def export_tuning_dataset(request: Dict[str, Any]):
     tags = request.get("tags", None)
     dataset_jsonl = echo_engine.compile_jsonl(format_type, tags)
     return {"status": "SUCCESS", "jsonl": dataset_jsonl}
+
+
+# --- Loom Endpoints ---
+
+@app.post("/api/loom/run")
+async def run_loom_workflow(request: LoomRunRequest):
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="Gemini API Key not configured")
+
+    async def progress_callback(node_id: str, status: str, data: Dict[str, Any]):
+        await manager.broadcast({
+            "type": "LOOM_STEP",
+            "session_id": request.session_id,
+            "node_id": node_id,
+            "status": status,
+            "data": data
+        })
+
+    try:
+        result = await loom_executor.execute_workflow(
+            nodes=request.nodes,
+            edges=request.edges,
+            input_value=request.input,
+            session_id=request.session_id,
+            progress_callback=progress_callback
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Loom run failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 if __name__ == "__main__":
