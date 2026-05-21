@@ -108,6 +108,14 @@ export default function DashboardShell({ children }: { children: React.ReactNode
             sidebarOpen={sidebarOpen} 
           />
           <NavItem 
+            href="/aegis" 
+            icon={<Shield size={20} />} 
+            label="The Aegis" 
+            active={pathname === "/aegis"} 
+            sidebarOpen={sidebarOpen} 
+            variant="aegis"
+          />
+          <NavItem 
             href="/chronos" 
             icon={<Clock size={20} />} 
             label="The Chronos" 
@@ -181,12 +189,13 @@ function NavItem({
     label: string, 
     active?: boolean, 
     sidebarOpen: boolean,
-    variant?: "default" | "forge" | "nexus" | "mirror"
+    variant?: "default" | "forge" | "nexus" | "mirror" | "aegis"
 }) {
   const getActiveClass = () => {
     if (variant === "forge") return "bg-orange-500/10 text-orange-400 border border-orange-500/20";
     if (variant === "nexus") return "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20";
     if (variant === "mirror") return "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20";
+    if (variant === "aegis") return "bg-amber-500/10 text-amber-400 border border-amber-500/20";
     return "bg-blue-600/10 text-blue-400 border border-blue-600/20";
   };
 

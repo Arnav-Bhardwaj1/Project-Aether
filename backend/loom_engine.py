@@ -5,7 +5,7 @@ from collections import deque
 import google.generativeai as genai
 
 # Import components to orchestrate
-from citadel_engine import CitadelMiddleware
+from citadel_engine import CitadelEngine
 from cortex_engine import CortexEngine
 from echo_engine import EchoEngine
 from mirror_engine import MirrorEngine
@@ -20,11 +20,13 @@ class LoomWorkflowExecutor:
 
     def __init__(
         self,
+        citadel: CitadelEngine,
         cortex: CortexEngine,
         echo: EchoEngine,
         mirror: MirrorEngine,
         gemini_key: str
     ):
+        self.citadel = citadel
         self.cortex = cortex
         self.echo = echo
         self.mirror = mirror
@@ -100,7 +102,7 @@ class LoomWorkflowExecutor:
 
                 elif node_type == "CITADEL":
                     # Guardrails Scan
-                    audit = await CitadelMiddleware.audit_flow(current_data, "INPUT")
+                    audit = await self.citadel.evaluate_text(current_data, "INPUT")
                     results[node_id] = audit
                     if not audit["passed"]:
                         violations = [v["rule_name"] for v in audit["violations"]]

@@ -27,6 +27,7 @@ from reasoning_engine import GraphReasoningEngine
 from memory_pruner import MemoryPruner
 from echo_engine import EchoEngine
 from loom_engine import LoomWorkflowExecutor
+from aegis_engine import AegisEngine
 
 
 
@@ -54,13 +55,11 @@ pulse_engine = PulseEngine()
 metric_synthesizer = MetricSynthesizer(GEMINI_API_KEY)
 alert_manager = AlertManager()
 cortex_engine = CortexEngine()
-cortex_engine.seed_mock_data()
 entity_extractor = EntityExtractor(GEMINI_API_KEY, cortex_engine)
 reasoning_engine = GraphReasoningEngine(GEMINI_API_KEY, cortex_engine)
 memory_pruner = MemoryPruner(cortex_engine)
 echo_engine = EchoEngine()
-loom_executor = LoomWorkflowExecutor(cortex_engine, echo_engine, mirror_engine, GEMINI_API_KEY)
-
+aegis_engine = AegisEngine()
 
 
 # SwarmManager initialized later with callback
@@ -90,6 +89,9 @@ citadel = CitadelEngine(GEMINI_API_KEY)
 # Load default policies
 for policy in get_standard_policies():
     citadel.load_policy(policy)
+
+loom_executor = LoomWorkflowExecutor(citadel, cortex_engine, echo_engine, mirror_engine, GEMINI_API_KEY)
+
 
 class CitadelMiddleware:
     """Interlocks with CitadelEngine to enforce governance during execution."""
@@ -130,7 +132,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # --- Initialize Stateful Orchestrators ---
-sandbox_orchestrator = SandboxOrchestrator(mirror_engine, manager.broadcast)
+sandbox_orchestrator = SandboxOrchestrator(mirror_engine, manager.broadcast, aegis_engine)
 
 # --- Core Execution Logic ---
 
@@ -139,6 +141,45 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
     snapshot_id = str(uuid.uuid4())
     start_time = time.time()
     
+    # 0. Aether Aegis Guardrails
+    # A. Loop Prevention Check
+    loop_check = aegis_engine.check_loop_prevention(session_id)
+    if not loop_check["passed"]:
+        await manager.broadcast({
+            "type": "AEGIS_ALERT",
+            "session_id": session_id,
+            "alert": {
+                "id": f"alert_loop_{int(time.time())}",
+                "timestamp": time.time(),
+                "type": "AGENT_LOOP",
+                "rule_id": loop_check["violations"][0]["id"],
+                "target": "EXECUTION_RATE",
+                "message": loop_check["violations"][0]["description"],
+                "severity": loop_check["violations"][0]["severity"],
+                "session_id": session_id
+            }
+        })
+        return {"status": "BLOCKED", "reason": [v["description"] for v in loop_check["violations"]], "snapshot_id": snapshot_id}
+
+    # B. Input Firewall Check
+    input_aegis = aegis_engine.evaluate_text_rules(prompt, session_id)
+    if not input_aegis["passed"] and any(v["severity"] in ["HIGH", "CRITICAL"] for v in input_aegis["violations"]):
+        await manager.broadcast({
+            "type": "AEGIS_ALERT",
+            "session_id": session_id,
+            "alert": {
+                "id": f"alert_input_{int(time.time())}",
+                "timestamp": time.time(),
+                "type": "FIREWALL_BLOCK",
+                "rule_id": input_aegis["violations"][0]["id"],
+                "target": "INPUT",
+                "message": f"Aegis Firewall blocked input: Rule '{input_aegis['violations'][0]['name']}' triggered.",
+                "severity": input_aegis["violations"][0]["severity"],
+                "session_id": session_id
+            }
+        })
+        return {"status": "BLOCKED", "reason": [v["description"] for v in input_aegis["violations"]], "snapshot_id": snapshot_id}
+
     # 1. Audit Input via Citadel
     input_audit = await CitadelMiddleware.audit_flow(prompt, "INPUT")
     
@@ -181,6 +222,25 @@ async def execute_agent_logic(prompt: str, session_id: str, parent_id: Optional[
         response = model.generate_content(final_prompt)
         raw_output = response.text
         
+        # Aegis Output Firewall Check
+        output_aegis = aegis_engine.evaluate_text_rules(raw_output, session_id)
+        if not output_aegis["passed"] and any(v["severity"] in ["HIGH", "CRITICAL"] for v in output_aegis["violations"]):
+            await manager.broadcast({
+                "type": "AEGIS_ALERT",
+                "session_id": session_id,
+                "alert": {
+                    "id": f"alert_output_{int(time.time())}",
+                    "timestamp": time.time(),
+                    "type": "FIREWALL_BLOCK",
+                    "rule_id": output_aegis["violations"][0]["id"],
+                    "target": "OUTPUT",
+                    "message": f"Aegis Firewall blocked output: Rule '{output_aegis['violations'][0]['name']}' triggered.",
+                    "severity": output_aegis["violations"][0]["severity"],
+                    "session_id": session_id
+                }
+            })
+            return {"status": "BLOCKED", "reason": [v["description"] for v in output_aegis["violations"]], "snapshot_id": snapshot_id}
+
         # 3. Audit Output via Citadel
         output_audit = await CitadelMiddleware.audit_flow(raw_output, "OUTPUT")
         final_output = raw_output
@@ -488,6 +548,58 @@ async def toggle_policy(policy_id: str):
         citadel.policies[policy_id].active = not citadel.policies[policy_id].active
         return {"status": "SUCCESS", "active": citadel.policies[policy_id].active}
     raise HTTPException(status_code=404, detail="Policy not found")
+
+# --- Aegis Endpoints ---
+
+@app.get("/api/aegis/rules")
+async def get_aegis_rules():
+    return aegis_engine.get_rules()
+
+@app.post("/api/aegis/rules/{rule_id}/toggle")
+async def toggle_aegis_rule(rule_id: str):
+    success = aegis_engine.toggle_rule(rule_id)
+    if success:
+        return {"status": "SUCCESS", "enabled": aegis_engine.rules[rule_id].enabled}
+    raise HTTPException(status_code=404, detail="Rule not found")
+
+@app.get("/api/aegis/decoys")
+async def get_aegis_decoys():
+    return aegis_engine.get_decoys()
+
+@app.post("/api/aegis/decoys/add")
+async def add_aegis_decoy(request: Dict[str, str]):
+    path = request.get("path", "")
+    type_ = request.get("type", "FILE")
+    token = request.get("secret_token")
+    if not path:
+         raise HTTPException(status_code=400, detail="Missing path")
+    return aegis_engine.add_decoy(path, type_, token)
+
+@app.get("/api/aegis/alerts")
+async def get_aegis_alerts():
+    return aegis_engine.get_alerts()
+
+@app.post("/api/aegis/alerts/clear")
+async def clear_aegis_alerts():
+    aegis_engine.clear_alerts()
+    return {"status": "SUCCESS"}
+
+@app.get("/api/aegis/stats")
+async def get_aegis_stats():
+    return aegis_engine.get_stats()
+
+@app.post("/api/aegis/simulate-attack")
+async def simulate_aegis_attack(request: Dict[str, str]):
+    category = request.get("category", "PORT_SCAN")
+    session_id = request.get("session_id", "sim_session")
+    alerts = aegis_engine.simulate_attack_sequence(session_id, category)
+    for alert in alerts:
+        await manager.broadcast({
+            "type": "AEGIS_ALERT",
+            "session_id": session_id,
+            "alert": alert
+        })
+    return {"status": "SUCCESS", "alerts": alerts}
 
 # --- Chronos Endpoints ---
 

@@ -1,0 +1,40 @@
+[
+  {
+    "trace_id": "seed_1",
+    "session_id": "session_seed_1",
+    "prompt": "List our database configuration settings and passwords.",
+    "original_response": "The production database is located at pg.aether-prod.internal. Password is db_pass_2026.",
+    "corrected_response": "Access to database credential logs is restricted under policy NIST-800-53. I cannot provide passwords.",
+    "rating": "NEGATIVE",
+    "tags": [
+      "PII Leak",
+      "Compliance Breach"
+    ],
+    "timestamp": 1778872812.8182528
+  },
+  {
+    "trace_id": "seed_2",
+    "session_id": "session_seed_1",
+    "prompt": "Check server health and write report.",
+    "original_response": "Server health is good. CPU is at 12%. Ram is at 50%. Report finished.",
+    "corrected_response": "[Aether Node Report] System health: OPTIMAL. Resource allocations remain well within compliant limits. Latency: 42ms.",
+    "rating": "POSITIVE",
+    "tags": [
+      "General Improvement",
+      "Formatting"
+    ],
+    "timestamp": 1778959212.8182552
+  },
+  {
+    "trace_id": "seed_3",
+    "session_id": "session_seed_2",
+    "prompt": "Draft an email notifying users of temporary downtime.",
+    "original_response": "Hey guys, site will be down. Sorry.",
+    "corrected_response": "Subject: Notice of Scheduled Aether Maintenance Window\n\nDear User,\n\nPlease be advised that Aether will undergo scheduled maintenance to enhance governance engine throughput on May 20th. Expect brief outages.",
+    "rating": "POSITIVE",
+    "tags": [
+      "Tone Alignment"
+    ],
+    "timestamp": 1779045612.818256
+  }
+]
