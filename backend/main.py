@@ -601,6 +601,27 @@ async def simulate_aegis_attack(request: Dict[str, str]):
         })
     return {"status": "SUCCESS", "alerts": alerts}
 
+@app.get("/api/aegis/fim/ledger")
+async def get_aegis_fim_ledger():
+    return aegis_engine.get_fim_ledger()
+
+@app.get("/api/aegis/ast/scans")
+async def get_aegis_ast_scans():
+    return aegis_engine.get_ast_scans()
+
+@app.post("/api/aegis/decode-test")
+async def test_aegis_decode(request: Dict[str, str]):
+    text = request.get("text", "")
+    decoded = aegis_engine.recursive_decode_and_extract(text)
+    violations = aegis_engine.evaluate_text_rules(text, "decode_test_session")
+    return {
+        "text": text,
+        "decoded": decoded,
+        "violations": violations["violations"],
+        "passed": violations["passed"],
+        "risk_score": violations["risk_score"]
+    }
+
 # --- Chronos Endpoints ---
 
 @app.get("/api/chronos/timeline/{session_id}")

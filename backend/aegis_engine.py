@@ -52,6 +52,11 @@ class AegisEngine:
         # session_id -> current depth counter
         self.session_depths: Dict[str, int] = {}
         
+        # Extended security metrics & registries
+        self.fim_registry: Dict[str, Dict[str, Dict[str, Any]]] = {} # session_id -> {filepath -> {hash, size, last_modified}}
+        self.fim_ledger: List[Dict[str, Any]] = []
+        self.ast_scans: List[Dict[str, Any]] = []
+        
         self._load_default_rules()
         self._load_default_decoys()
 
@@ -105,6 +110,13 @@ class AegisEngine:
                 value=15.0, # max 15 consecutive execution nodes
                 severity="MEDIUM",
                 description="Stops agent swarm workflows that run for too many cycles without user feedback."
+            ),
+            AegisRule(
+                id="fw-dlp-leak",
+                name="Data Loss Prevention (DLP) Guard",
+                type="DLP",
+                severity="CRITICAL",
+                description="Monitors and blocks output containing sensitive data leaks (e.g., credit card details, AWS secrets, SSNs, and private keys)."
             )
         ]
         for r in default_rules:
@@ -141,30 +153,299 @@ class AegisEngine:
         for d in default_decoys:
             self.decoys[d.id] = d
 
+    def _extract_domains(self, text: str) -> List[str]:
+        # Regex to find potential domains or URLs
+        pattern = r'\b(?:https?://|wss?://|ftp://)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b'
+        candidates = re.findall(pattern, text)
+        
+        domains = []
+        excluded_extensions = {
+            'py', 'js', 'ts', 'tsx', 'css', 'json', 'md', 'txt', 'csv', 'png', 'jpg', 'jpeg', 
+            'gif', 'exe', 'sh', 'bat', 'xml', 'yml', 'yaml', 'html', 'rs', 'go', 'cpp', 'c', 
+            'h', 'java', 'class', 'dll', 'so', 'db', 'sql', 'log', 'ini', 'cfg', 'conf',
+            'append', 'split', 'join', 'read', 'write', 'close', 'open', 'pop', 'push', 'insert'
+        }
+        
+        for cand in candidates:
+            domain = cand
+            if "://" in domain:
+                domain = domain.split("://")[1]
+            domain = domain.split("/")[0]
+            domain = domain.split("?")[0]
+            domain = domain.split("#")[0]
+            domain = domain.split(":")[0]
+            
+            domain = domain.strip().lower()
+            if "_" in domain:
+                continue
+                
+            parts = domain.split('.')
+            if len(parts) > 1:
+                tld = parts[-1]
+                if tld in excluded_extensions:
+                    continue
+                
+                valid = True
+                for part in parts:
+                    if not part:
+                        valid = False
+                        break
+                    if not re.match(r'^[a-z0-9]([a-z0-9-]*[a-z0-9])?$', part):
+                        valid = False
+                        break
+                if valid:
+                    domains.append(domain)
+                    
+        return list(set(domains))
+
+    def compute_sha256(self, content: str) -> str:
+        import hashlib
+        return hashlib.sha256(content.encode('utf-8', errors='ignore')).hexdigest()
+
+    def recursive_decode_and_extract(self, text: str, depth: int = 3) -> List[str]:
+        """Recursively scans and extracts decoded payloads from the text up to `depth` levels."""
+        if depth <= 0:
+            return []
+        
+        extracted = []
+        
+        # 1. Base64 Decoder
+        b64_matches = re.findall(r'\b[a-zA-Z0-9+/]{8,}={0,2}\b', text)
+        for match in b64_matches:
+            try:
+                import base64
+                decoded = base64.b64decode(match.encode('utf-8'), validate=True).decode('utf-8', errors='ignore')
+                if len(decoded) > 4 and any(c.isalnum() for c in decoded):
+                    extracted.append(decoded)
+                    extracted.extend(self.recursive_decode_and_extract(decoded, depth - 1))
+            except Exception:
+                pass
+                
+        # 2. Hex Decoder
+        hex_matches = re.findall(r'(?:\\x[0-9a-fA-F]{2})+', text)
+        for match in hex_matches:
+            try:
+                byte_data = bytes.fromhex(match.replace('\\x', ''))
+                decoded = byte_data.decode('utf-8', errors='ignore')
+                if len(decoded) > 2:
+                    extracted.append(decoded)
+                    extracted.extend(self.recursive_decode_and_extract(decoded, depth - 1))
+            except Exception:
+                pass
+                
+        # 3. URL Decoder
+        if '%' in text:
+            try:
+                import urllib.parse
+                decoded = urllib.parse.unquote(text)
+                if decoded != text:
+                    extracted.append(decoded)
+                    extracted.extend(self.recursive_decode_and_extract(decoded, depth - 1))
+            except Exception:
+                pass
+                
+        # 4. Octal Decoder
+        octal_matches = re.findall(r'(?:\\[0-7]{3})+', text)
+        for match in octal_matches:
+            try:
+                octals = [int(o, 8) for o in re.findall(r'[0-7]{3}', match)]
+                decoded = bytes(octals).decode('utf-8', errors='ignore')
+                if len(decoded) > 2:
+                    extracted.append(decoded)
+                    extracted.extend(self.recursive_decode_and_extract(decoded, depth - 1))
+            except Exception:
+                pass
+                
+        return list(set(extracted))
+
+    def check_dlp_leakage(self, text: str) -> List[Dict[str, Any]]:
+        """Scans content for sensitive information (DLP)."""
+        leaks = []
+        dlp_patterns = {
+            "CREDIT_CARD": r'\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b',
+            "SSN": r'\b\d{3}-\d{2}-\d{4}\b',
+            "AWS_KEY": r'\b(AKIA[A-Z0-9]{16})\b',
+            "PRIVATE_KEY": r'-----BEGIN [A-Z ]*PRIVATE KEY-----'
+        }
+        for key_type, pattern in dlp_patterns.items():
+            matches = re.findall(pattern, text)
+            if matches:
+                target_match = matches[0] if isinstance(matches[0], str) else matches[0][0]
+                leaks.append({
+                    "type": key_type,
+                    "matched": target_match[:15] + "..." if len(target_match) > 15 else target_match
+                })
+        return leaks
+
+    def scan_python_ast(self, code: str) -> Dict[str, Any]:
+        """Statically analyzes Python code for safety violations."""
+        import ast
+        
+        unsafe_imports = []
+        unsafe_calls = []
+        threat_level = "LOW"
+        risk_score = 0.0
+        
+        blocked_imports = {'os', 'sys', 'subprocess', 'socket', 'urllib', 'requests', 'pty', 'ctypes', 'builtins'}
+        blocked_calls = {'eval', 'exec', 'getattr', 'setattr', '__import__', 'compile'}
+        
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        name = alias.name.split('.')[0]
+                        if name in blocked_imports:
+                            unsafe_imports.append(alias.name)
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        name = node.module.split('.')[0]
+                        if name in blocked_imports:
+                            unsafe_imports.append(f"from {node.module} import {[alias.name for alias in node.names]}")
+                elif isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name):
+                        if node.func.id in blocked_calls:
+                            unsafe_calls.append(node.func.id)
+                    elif isinstance(node.func, ast.Attribute):
+                        if node.func.attr in blocked_calls:
+                            unsafe_calls.append(node.func.attr)
+                            
+            if unsafe_imports or unsafe_calls:
+                threat_level = "HIGH" if (any(x in ['subprocess', 'socket', 'pty'] for x in unsafe_imports) or 'eval' in unsafe_calls or 'exec' in unsafe_calls) else "MEDIUM"
+                risk_score = 0.8 if threat_level == "HIGH" else 0.5
+                
+            return {
+                "parsed": True,
+                "unsafe_imports": unsafe_imports,
+                "unsafe_calls": unsafe_calls,
+                "threat_level": threat_level,
+                "risk_score": risk_score
+            }
+        except Exception as e:
+            return {
+                "parsed": False,
+                "error": str(e),
+                "unsafe_imports": [],
+                "unsafe_calls": [],
+                "threat_level": "LOW",
+                "risk_score": 0.0
+            }
+
+    def register_file_fim(self, session_id: str, filepath: str, action: str, content: str = ""):
+        """Updates FIM registry and logs changes to the ledger."""
+        now = time.time()
+        file_hash = self.compute_sha256(content) if action != "DELETE" else "DELETED"
+        size = len(content.encode('utf-8')) if action != "DELETE" else 0
+        
+        if session_id not in self.fim_registry:
+            self.fim_registry[session_id] = {}
+            
+        previous_hash = "NEW_FILE"
+        if filepath in self.fim_registry[session_id]:
+            previous_hash = self.fim_registry[session_id][filepath]["hash"]
+            
+        if action == "DELETE":
+            if filepath in self.fim_registry[session_id]:
+                del self.fim_registry[session_id][filepath]
+        else:
+            self.fim_registry[session_id][filepath] = {
+                "hash": file_hash,
+                "size": size,
+                "last_modified": now
+            }
+            
+        self.fim_ledger.append({
+            "id": f"fim_{uuid.uuid4().hex[:8]}",
+            "timestamp": now,
+            "session_id": session_id,
+            "filepath": filepath,
+            "action": action,
+            "size": size,
+            "previous_hash": previous_hash[:12] if previous_hash else "None",
+            "current_hash": file_hash[:12] if file_hash else "None"
+        })
+        logger.info(f"[AEGIS FIM] Registered {action} for '{filepath}' in session {session_id}")
+
+    def get_fim_ledger(self) -> List[Dict[str, Any]]:
+        return sorted(self.fim_ledger, key=lambda x: x["timestamp"], reverse=True)
+
+    def get_ast_scans(self) -> List[Dict[str, Any]]:
+        return sorted(self.ast_scans, key=lambda x: x["timestamp"], reverse=True)
+
     def evaluate_text_rules(self, text: str, session_id: str) -> Dict[str, Any]:
-        """Scans input prompt or output text against domain and command rules."""
+        """Scans input prompt or output text against domain, command and DLP rules (including recursive decodes)."""
         violations = []
         risk_score = 0.0
         
-        for rule_id, rule in self.rules.items():
-            if not rule.enabled:
-                continue
+        # 1. Recursive Decode
+        decoded_payloads = self.recursive_decode_and_extract(text)
+        all_texts = [(text, False)] + [(p, True) for p in decoded_payloads]
+        
+        # 2. Evaluate rules for all texts
+        for check_text, is_decoded in all_texts:
+            extracted_domains = self._extract_domains(check_text)
+            
+            for rule_id, rule in self.rules.items():
+                if not rule.enabled:
+                    continue
+                    
+                if rule.type == "DOMAIN" and rule.pattern:
+                    for domain in extracted_domains:
+                        if re.search(rule.pattern, domain, re.IGNORECASE):
+                            if rule not in violations:
+                                violations.append(rule)
+                            alert = SecurityAlert(
+                                id=f"alert_{uuid.uuid4().hex[:8]}",
+                                timestamp=time.time(),
+                                type="FIREWALL_BLOCK",
+                                rule_id=rule.id,
+                                target=domain,
+                                message=f"Domain rule '{rule.name}' triggered on '{domain}'" + (" (in decoded payload)" if is_decoded else ""),
+                                severity=rule.severity,
+                                session_id=session_id
+                            )
+                            self.alerts.append(alert)
+                            logger.warning(f"[AEGIS FIREWALL] Blocked domain in session {session_id} on rule {rule.id}: {domain}")
                 
-            if rule.type in ["DOMAIN", "COMMAND"] and rule.pattern:
-                if re.search(rule.pattern, text, re.IGNORECASE):
-                    violations.append(rule)
-                    alert = SecurityAlert(
-                        id=f"alert_{uuid.uuid4().hex[:8]}",
-                        timestamp=time.time(),
-                        type="FIREWALL_BLOCK",
-                        rule_id=rule.id,
-                        target=rule.type,
-                        message=f"Rule '{rule.name}' triggered: Match found for '{rule.pattern}'",
-                        severity=rule.severity,
-                        session_id=session_id
-                    )
-                    self.alerts.append(alert)
-                    logger.warning(f"[AEGIS FIREWALL] Blocked text in session {session_id} on rule {rule.id}")
+                elif rule.type == "COMMAND" and rule.pattern:
+                    if re.search(rule.pattern, check_text, re.IGNORECASE):
+                        if rule not in violations:
+                            violations.append(rule)
+                        alert = SecurityAlert(
+                            id=f"alert_{uuid.uuid4().hex[:8]}",
+                            timestamp=time.time(),
+                            type="FIREWALL_BLOCK",
+                            rule_id=rule.id,
+                            target=rule.type,
+                            message=f"Command rule '{rule.name}' triggered" + (" (in decoded payload)" if is_decoded else ""),
+                            severity=rule.severity,
+                            session_id=session_id
+                        )
+                        self.alerts.append(alert)
+                        logger.warning(f"[AEGIS FIREWALL] Blocked text in session {session_id} on rule {rule.id}")
+
+        # 3. Evaluate DLP Rules
+        dlp_rule = self.rules.get("fw-dlp-leak")
+        if dlp_rule and dlp_rule.enabled:
+            for check_text, is_decoded in all_texts:
+                leaks = self.check_dlp_leakage(check_text)
+                if leaks:
+                    if dlp_rule not in violations:
+                        violations.append(dlp_rule)
+                    for leak in leaks:
+                        alert = SecurityAlert(
+                            id=f"alert_{uuid.uuid4().hex[:8]}",
+                            timestamp=time.time(),
+                            type="FIREWALL_BLOCK",
+                            rule_id=dlp_rule.id,
+                            target=leak["type"],
+                            message=f"DLP Leak Blocked: Found sensitive {leak['type']} ('{leak['matched']}')" + (" (in decoded payload)" if is_decoded else ""),
+                            severity=dlp_rule.severity,
+                            session_id=session_id
+                        )
+                        self.alerts.append(alert)
+                        logger.warning(f"[AEGIS FIREWALL] Blocked text in session {session_id} on rule {dlp_rule.id}: {leak['type']}")
+                    break # only trigger once per evaluation run
 
         if violations:
             severity_weights = {"LOW": 0.2, "MEDIUM": 0.5, "HIGH": 0.8, "CRITICAL": 1.0}

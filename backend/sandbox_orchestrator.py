@@ -39,7 +39,7 @@ class SandboxOrchestrator:
         """
         if session_id not in self.mirror.sessions:
             logger.error(f"Sandbox session {session_id} not found.")
-            return
+            return None
 
         action_type = action.get("type")
         path_or_table = action.get("path") or action.get("table") or ""
@@ -63,13 +63,59 @@ class SandboxOrchestrator:
                         "session_id": session_id
                     }
                 })
+
+        # AST Static Guard check
+        if self.aegis and action_type == "FILE_WRITE" and path_or_table.endswith(".py"):
+            code_content = action.get("content", "")
+            ast_res = self.aegis.scan_python_ast(code_content)
             
+            import uuid
+            import time
+            scan_record = {
+                "id": f"ast_{uuid.uuid4().hex[:8]}",
+                "timestamp": time.time(),
+                "session_id": session_id,
+                "filepath": path_or_table,
+                "unsafe_imports": ast_res["unsafe_imports"],
+                "unsafe_calls": ast_res["unsafe_calls"],
+                "threat_level": ast_res["threat_level"],
+                "risk_score": ast_res["risk_score"]
+            }
+            self.aegis.ast_scans.append(scan_record)
+            
+            if ast_res["unsafe_imports"] or ast_res["unsafe_calls"]:
+                is_blocked = ast_res["threat_level"] == "HIGH"
+                alert_type = "FIREWALL_BLOCK" if is_blocked else "INTRUSION_ATTEMPT"
+                
+                await self.broadcast({
+                    "type": "AEGIS_ALERT",
+                    "session_id": session_id,
+                    "alert": {
+                        "id": f"alert_ast_{uuid.uuid4().hex[:8]}",
+                        "timestamp": time.time(),
+                        "type": alert_type,
+                        "rule_id": "fw-ast-static",
+                        "target": path_or_table,
+                        "message": f"AST GUARD INTERCEPT: Unsafe code in {path_or_table}. Imports: {ast_res['unsafe_imports']}, Calls: {ast_res['unsafe_calls']}",
+                        "severity": ast_res["threat_level"],
+                        "session_id": session_id
+                    }
+                })
+                
+                if is_blocked:
+                    logger.warning(f"[AEGIS AST] Blocked file write for '{path_or_table}' in session {session_id}")
+                    return {"status": "BLOCKED", "reason": f"AST Guard: restricted imports/calls detected in {path_or_table}"}
+
         mutation = None
         
         if action_type == "FILE_WRITE":
             mutation = self.mirror.write_file(session_id, action["path"], action["content"])
+            if mutation and self.aegis:
+                self.aegis.register_file_fim(session_id, action["path"], "WRITE", action["content"])
         elif action_type == "FILE_DELETE":
             mutation = self.mirror.delete_file(session_id, action["path"])
+            if mutation and self.aegis:
+                self.aegis.register_file_fim(session_id, action["path"], "DELETE")
         elif action_type == "DB_INSERT":
             mutation = self.mirror.mutate_db(session_id, action["table"], "INSERT", action["data"])
         
